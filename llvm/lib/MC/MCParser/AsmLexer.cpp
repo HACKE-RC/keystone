@@ -383,8 +383,17 @@ AsmToken AsmLexer::LexSingleQuote()
 
   CurChar = getNextChar();
 
-  if (CurChar != '\'')
-    return ReturnError(TokStart, "single quote way too long");
+  if (CurChar != '\'') {
+    // More than one character between the quotes. NASM treats single-quoted
+    // text as a string literal (no escape processing), equivalent to a
+    // double-quoted string. Scan to the closing quote and emit a String token.
+    while (CurChar != '\'') {
+      if (CurChar == EOF)
+        return ReturnError(TokStart, "unterminated single quote");
+      CurChar = getNextChar();
+    }
+    return AsmToken(AsmToken::String, StringRef(TokStart, CurPtr - TokStart));
+  }
 
   // The idea here being that 'c' is basically just an integral
   // constant.
