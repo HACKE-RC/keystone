@@ -396,6 +396,8 @@ private:
     DK_NASM_DO,      // NASM 'do' (16 bytes)
     DK_NASM_DY,      // NASM 'dy' (32 bytes)
     DK_NASM_DZ,      // NASM 'dz' (64 bytes)
+    DK_NASM_ORG,     // NASM 'org'
+    DK_NASM_SECTION, // NASM 'section' / 'segment'
     DK_END
   };
 
@@ -529,13 +531,16 @@ private:
   bool parseNasmDirectiveBits();
 
   // "resb"/"resw"/"resd"/"resq"/... (Nasm) -- reserve uninitialized space
-  bool parseNasmDirectiveReserve(unsigned Size);
+  bool parseNasmDirectiveReserve(unsigned Size, unsigned int &KsError);
 
   // "times" (Nasm) -- repeat the rest of the statement N times
-  bool parseNasmDirectiveTimes(SMLoc DirectiveLoc);
+  bool parseNasmDirectiveTimes(SMLoc DirectiveLoc, unsigned int &KsError);
 
   // "align" (Nasm)
-  bool parseNasmDirectiveAlign();
+  bool parseNasmDirectiveAlign(unsigned int &KsError);
+
+  // "org" (Nasm) -- set the origin/base address
+  bool parseNasmDirectiveOrg(unsigned int &KsError);
 
   // "use32" (Nasm)
   bool parseNasmDirectiveUse32();
@@ -1999,16 +2004,16 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
                           .Case("resy", 32)
                           .Case("resz", 64)
                           .Default(1);
-      return parseNasmDirectiveReserve(Unit);
+      return parseNasmDirectiveReserve(Unit, Info.KsError);
     }
     case DK_NASM_TIMES:
-      return parseNasmDirectiveTimes(IDLoc);
+      return parseNasmDirectiveTimes(IDLoc, Info.KsError);
     case DK_NASM_EQU:
       // Bare 'equ' with no preceding label name is invalid.
       Info.KsError = KS_ERR_ASM_DIRECTIVE_ID;
       return true;
     case DK_NASM_ALIGN:
-      return parseNasmDirectiveAlign();
+      return parseNasmDirectiveAlign(Info.KsError);
     case DK_NASM_DT:
       return parseDirectiveValue(10, Info.KsError);
     case DK_NASM_DO:
@@ -2017,6 +2022,14 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
       return parseDirectiveValue(32, Info.KsError);
     case DK_NASM_DZ:
       return parseDirectiveValue(64, Info.KsError);
+    case DK_NASM_ORG:
+      return parseNasmDirectiveOrg(Info.KsError);
+    case DK_NASM_SECTION:
+      // Keystone uses a single flat output stream (code and data are mixed in
+      // one section by design), so section/segment switches are accepted and
+      // output stays in source order. Consume the section name and attributes.
+      eatToEndOfStatement();
+      return false;
     }
 
     //return Error(IDLoc, "unknown directive");
@@ -5493,7 +5506,7 @@ bool AsmParser::parseNasmDirectiveDefault()
 /// parseNasmDirectiveReserve
 /// ::= (resb | resw | resd | resq | rest | reso | resy | resz) count
 /// Reserves uninitialized space; in a flat binary this emits zero bytes.
-bool AsmParser::parseNasmDirectiveReserve(unsigned Size)
+bool AsmParser::parseNasmDirectiveReserve(unsigned Size, unsigned int &KsError)
 {
   checkForValidSection();
 
@@ -5521,7 +5534,7 @@ bool AsmParser::parseNasmDirectiveReserve(unsigned Size)
 /// parseNasmDirectiveAlign
 /// ::= align boundary [, fill]
 /// where fill is an optional 'db <value>', 'nop', or bare value.
-bool AsmParser::parseNasmDirectiveAlign()
+bool AsmParser::parseNasmDirectiveAlign(unsigned int &KsError)
 {
   checkForValidSection();
 
@@ -5571,22 +5584,54 @@ bool AsmParser::parseNasmDirectiveAlign()
   return false;
 }
 
+/// Returns true if the expression tree references any symbol/label (including
+/// the NASM '$' location counter). Defined labels fold to their parse-time
+/// offset during evaluation, so this structural check is the only reliable way
+/// to tell a true compile-time constant from a layout-dependent value.
+static bool exprReferencesSymbol(const MCExpr *E) {
+  switch (E->getKind()) {
+  case MCExpr::Constant:
+    return false;
+  case MCExpr::SymbolRef:
+    return true;
+  case MCExpr::Unary:
+    return exprReferencesSymbol(cast<MCUnaryExpr>(E)->getSubExpr());
+  case MCExpr::Binary: {
+    const MCBinaryExpr *BE = cast<MCBinaryExpr>(E);
+    return exprReferencesSymbol(BE->getLHS()) ||
+           exprReferencesSymbol(BE->getRHS());
+  }
+  case MCExpr::Target:
+    return true; // conservative
+  }
+  return true;
+}
+
 /// parseNasmDirectiveTimes
 /// ::= times count statement
 /// Repeats the rest of the statement 'count' times. Implemented by building a
 /// fresh source buffer holding the body repeated count times and lexing it.
-bool AsmParser::parseNasmDirectiveTimes(SMLoc DirectiveLoc)
+bool AsmParser::parseNasmDirectiveTimes(SMLoc DirectiveLoc, unsigned int &KsError)
 {
+  // The count must fold to a true compile-time constant. A count that depends
+  // on the current location -- the NASM '$'/'$$' counters, as in the
+  // boot-sector idiom 'times 510-($-$$) db 0' -- cannot be known by a
+  // single-pass assembler while parsing, and parseExpression silently folds
+  // such labels to their (wrong) parse-time offset. So both reject any '$' in
+  // the count's source text and reject any residual symbol reference, rather
+  // than emitting the wrong number of bytes. ('equ' constants still fold fine.)
+  const char *CountStart = getTok().getLoc().getPointer();
   const MCExpr *CountExpr;
   if (parseExpression(CountExpr)) {
     KsError = KS_ERR_ASM_DIRECTIVE_INVALID;
     return true;
   }
+  StringRef CountText(CountStart, getTok().getLoc().getPointer() - CountStart);
 
   int64_t Count;
-  if (!CountExpr->evaluateAsAbsolute(Count)) {
-    // The count must be resolvable now; self-referential counts such as
-    // 'times 64-($-$$)' need multi-pass assembly which is not supported.
+  if (CountText.find('$') != StringRef::npos ||
+      exprReferencesSymbol(CountExpr) ||
+      !CountExpr->evaluateAsAbsolute(Count)) {
     KsError = KS_ERR_ASM_DIRECTIVE_VALUE_RANGE;
     return true;
   }
@@ -5624,6 +5669,27 @@ bool AsmParser::parseNasmDirectiveTimes(SMLoc DirectiveLoc)
   CurBuffer = SrcMgr.AddNewSourceBuffer(std::move(Instantiation), SMLoc());
   Lexer.setBuffer(SrcMgr.getMemoryBuffer(CurBuffer)->getBuffer());
   Lex();
+  return false;
+}
+
+/// parseNasmDirectiveOrg
+/// ::= org address
+/// Sets the origin: labels and $/$$ are resolved relative to this address.
+/// Unlike a file offset, this does not emit any padding (matching NASM 'bin').
+bool AsmParser::parseNasmDirectiveOrg(unsigned int &KsError)
+{
+  int64_t Addr;
+  if (parseAbsoluteExpression(Addr)) {
+    KsError = KS_ERR_ASM_DIRECTIVE_INVALID;
+    return true;
+  }
+  if (getLexer().isNot(AsmToken::EndOfStatement)) {
+    KsError = KS_ERR_ASM_DIRECTIVE_TOKEN;
+    return true;
+  }
+  Lex();
+
+  getContext().setBaseAddress((uint64_t)Addr);
   return false;
 }
 
@@ -5667,6 +5733,9 @@ void AsmParser::initializeDirectiveKindMap(int syntax)
         DirectiveKindMap["do"] = DK_NASM_DO;
         DirectiveKindMap["dy"] = DK_NASM_DY;
         DirectiveKindMap["dz"] = DK_NASM_DZ;
+        DirectiveKindMap["org"] = DK_NASM_ORG;
+        DirectiveKindMap["section"] = DK_NASM_SECTION;
+        DirectiveKindMap["segment"] = DK_NASM_SECTION;
         DirectiveKindMap["extern"] = DK_EXTERN;
         DirectiveKindMap["resb"] = DK_NASM_RESB;
         DirectiveKindMap["resw"] = DK_NASM_RESB;
