@@ -320,6 +320,50 @@ AsmToken AsmLexer::LexDigit()
     return intToken(Result, Value);
   }
 
+  // NASM octal prefix: 0o[0-7]+ or 0q[0-7]+
+  if (*CurPtr == 'o' || *CurPtr == 'O' || *CurPtr == 'q' || *CurPtr == 'Q') {
+    ++CurPtr;
+    const char *NumStart = CurPtr;
+    while (CurPtr[0] >= '0' && CurPtr[0] <= '7')
+      ++CurPtr;
+
+    // Requires at least one octal digit.
+    if (CurPtr == NumStart)
+      return ReturnError(TokStart, "invalid octal number");
+
+    StringRef Result(TokStart, CurPtr - TokStart);
+
+    APInt Value(128, 0, true);
+    if (Result.substr(2).getAsInteger(8, Value))
+      return ReturnError(TokStart, "invalid octal number");
+
+    SkipIgnoredIntegerSuffix(CurPtr);
+
+    return intToken(Result, Value);
+  }
+
+  // NASM binary prefix: 0y[01]+ (alternative spelling of 0b)
+  if (*CurPtr == 'y' || *CurPtr == 'Y') {
+    ++CurPtr;
+    const char *NumStart = CurPtr;
+    while (CurPtr[0] == '0' || CurPtr[0] == '1')
+      ++CurPtr;
+
+    // Requires at least one binary digit.
+    if (CurPtr == NumStart)
+      return ReturnError(TokStart, "invalid binary number");
+
+    StringRef Result(TokStart, CurPtr - TokStart);
+
+    APInt Value(128, 0, true);
+    if (Result.substr(2).getAsInteger(2, Value))
+      return ReturnError(TokStart, "invalid binary number");
+
+    SkipIgnoredIntegerSuffix(CurPtr);
+
+    return intToken(Result, Value);
+  }
+
   if (*CurPtr == 'x' || *CurPtr == 'X') {
     ++CurPtr;
     const char *NumStart = CurPtr;
