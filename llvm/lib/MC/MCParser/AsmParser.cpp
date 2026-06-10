@@ -5689,11 +5689,15 @@ bool AsmParser::parseNasmDirectiveTimes(SMLoc DirectiveLoc, unsigned int &KsErro
 /// intended constant offset at layout.
 bool AsmParser::parseNasmTimesFill(const MCExpr *CountExpr, unsigned int &KsError)
 {
-  // Only 'db <constant>' is representable as a single-byte fill.
+  // Only 'db <constant>' is representable here. A location-dependent count is
+  // turned into a layout-time fill to a computed offset, and the org fragment
+  // fills a single repeated byte. A wider unit (dw/dd/dq) would scale the
+  // count -- hence the '$' label inside it -- by the unit size, which a
+  // relocatable expression cannot represent; the forms people actually use
+  // (e.g. 'times (N-($-$$))/4 dd 0') additionally divide a label, which is not
+  // evaluable single-pass. Such fills genuinely require a multi-pass assembler.
   if (!(getLexer().is(AsmToken::Identifier) &&
         getTok().getIdentifier().lower() == "db")) {
-    // A location-dependent count with any other body (an instruction, or a
-    // multi-byte unit) would need multi-pass assembly.
     KsError = KS_ERR_ASM_DIRECTIVE_VALUE_RANGE;
     return true;
   }
@@ -5722,7 +5726,7 @@ bool AsmParser::parseNasmTimesFill(const MCExpr *CountExpr, unsigned int &KsErro
   // fragment compares against a base-address-inclusive fragment offset, so the
   // anchor's full address (not a section-relative offset) is used; the count's
   // own '$' and our anchor sit at the same place, so any base/offset terms
-  // cancel to the intended fill length.
+  // cancel (as a symbol difference) to the intended fill length.
   MCSymbol *Anchor = getContext().createTempSymbol();
   getStreamer().EmitLabel(Anchor);
   const MCExpr *AnchorRef =
