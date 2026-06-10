@@ -69,6 +69,9 @@ private:
   // PUSH i8  --> PUSH32i8
   // PUSH word i8 --> PUSH16i8
   bool push32;
+  // PUSH word imm16 --> PUSHi16 (otherwise an imm16 that does not fit in i8
+  // matches the generic PUSHi32 and loses the 0x66 operand-size prefix).
+  bool push16;
   SMLoc consumeToken() {
     MCAsmParser &Parser = getParser();
     SMLoc Result = Parser.getTok().getLoc();
@@ -2035,6 +2038,8 @@ std::unique_ptr<X86Operand> X86AsmParser::ParseIntelOperand(std::string Mnem, un
       if (Mnem == "push") {
           if (Size == 0)
               push32 = true;
+          else if (Size == 16)
+              push16 = true;
       }
 
       const MCExpr *ImmExpr = MCConstantExpr::create(Imm, getContext());
@@ -2609,6 +2614,7 @@ bool X86AsmParser::ParseInstruction(ParseInstructionInfo &Info, StringRef Name,
     Name == "rex64" || Name == "data16";
 
   push32 = false;
+  push16 = false;
 
   // This does the actual operand parsing.  Don't parse any more if we have a
   // prefix juxtaposed with an operation like "lock incl 4(%rax)", because we
@@ -3218,6 +3224,8 @@ bool X86AsmParser::MatchAndEmitIntelInstruction(SMLoc IDLoc, unsigned &Opcode,
 
   if (push32 && Inst.getOpcode() == X86::PUSH16i8)
       Inst.setOpcode(X86::PUSH32i8);
+  if (push16 && Inst.getOpcode() == X86::PUSHi32)
+      Inst.setOpcode(X86::PUSHi16);
 
   // Restore the size of the unsized memory operand if we modified it.
   if (UnsizedMemOp)
