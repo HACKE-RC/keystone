@@ -3271,6 +3271,30 @@ bool X86AsmParser::MatchAndEmitIntelInstruction(SMLoc IDLoc, unsigned &Opcode,
   if (push16 && Inst.getOpcode() == X86::PUSHi32)
       Inst.setOpcode(X86::PUSHi16);
 
+  // The Intel-syntax mnemonic alias table (unlike AT&T's) lacks the
+  // mode-dependent suffixing for the no-operand RET/IRET family, so a bare
+  // 'ret'/'retf'/'iret' always matches one fixed variant and then picks up a
+  // spurious 0x66 operand-size prefix in the other mode. Re-select the
+  // mode-appropriate variant here (AT&T already resolves these via the alias
+  // table, so only do it for Intel/NASM syntax).
+  if (isParsingIntelSyntax()) {
+    if (is16BitMode()) {
+      switch (Inst.getOpcode()) {
+      case X86::RETL:   Inst.setOpcode(X86::RETW);   break;
+      case X86::RETIL:  Inst.setOpcode(X86::RETIW);  break;
+      case X86::LRETL:  Inst.setOpcode(X86::LRETW);  break;
+      case X86::LRETIL: Inst.setOpcode(X86::LRETIW); break;
+      default: break;
+      }
+    } else if (is32BitMode()) {
+      if (Inst.getOpcode() == X86::IRET16)
+        Inst.setOpcode(X86::IRET32);
+    } else if (is64BitMode()) {
+      if (Inst.getOpcode() == X86::IRET16)
+        Inst.setOpcode(X86::IRET64);
+    }
+  }
+
   // Restore the size of the unsized memory operand if we modified it.
   if (UnsizedMemOp)
     UnsizedMemOp->Mem.Size = 0;
