@@ -536,6 +536,9 @@ private:
   // "times" (Nasm) -- repeat the rest of the statement N times
   bool parseNasmDirectiveTimes(SMLoc DirectiveLoc, unsigned int &KsError);
 
+  // "times <location-dependent count> db <const>" -- layout-time fill
+  bool parseNasmTimesFill(const MCExpr *CountExpr, unsigned int &KsError);
+
   // "align" (Nasm)
   bool parseNasmDirectiveAlign(unsigned int &KsError);
 
@@ -5613,13 +5616,6 @@ static bool exprReferencesSymbol(const MCExpr *E) {
 /// fresh source buffer holding the body repeated count times and lexing it.
 bool AsmParser::parseNasmDirectiveTimes(SMLoc DirectiveLoc, unsigned int &KsError)
 {
-  // The count must fold to a true compile-time constant. A count that depends
-  // on the current location -- the NASM '$'/'$$' counters, as in the
-  // boot-sector idiom 'times 510-($-$$) db 0' -- cannot be known by a
-  // single-pass assembler while parsing, and parseExpression silently folds
-  // such labels to their (wrong) parse-time offset. So both reject any '$' in
-  // the count's source text and reject any residual symbol reference, rather
-  // than emitting the wrong number of bytes. ('equ' constants still fold fine.)
   const char *CountStart = getTok().getLoc().getPointer();
   const MCExpr *CountExpr;
   if (parseExpression(CountExpr)) {
@@ -5628,10 +5624,20 @@ bool AsmParser::parseNasmDirectiveTimes(SMLoc DirectiveLoc, unsigned int &KsErro
   }
   StringRef CountText(CountStart, getTok().getLoc().getPointer() - CountStart);
 
+  // A count that depends on the current location -- the NASM '$'/'$$' counters,
+  // as in 'times 510-($-$$) db 0' -- is not a compile-time constant (and
+  // parseExpression folds the embedded labels to a wrong parse-time offset).
+  // Such a count is handled by the location-dependent path below; it requires a
+  // single 'db <constant>' body, which becomes a layout-time fill to a computed
+  // offset. ('equ' constants fold to a plain constant and take the fast path.)
+  bool LocationDependent =
+      CountText.find('$') != StringRef::npos || exprReferencesSymbol(CountExpr);
+
+  if (LocationDependent)
+    return parseNasmTimesFill(CountExpr, KsError);
+
   int64_t Count;
-  if (CountText.find('$') != StringRef::npos ||
-      exprReferencesSymbol(CountExpr) ||
-      !CountExpr->evaluateAsAbsolute(Count)) {
+  if (!CountExpr->evaluateAsAbsolute(Count)) {
     KsError = KS_ERR_ASM_DIRECTIVE_VALUE_RANGE;
     return true;
   }
@@ -5669,6 +5675,61 @@ bool AsmParser::parseNasmDirectiveTimes(SMLoc DirectiveLoc, unsigned int &KsErro
   CurBuffer = SrcMgr.AddNewSourceBuffer(std::move(Instantiation), SMLoc());
   Lexer.setBuffer(SrcMgr.getMemoryBuffer(CurBuffer)->getBuffer());
   Lex();
+  return false;
+}
+
+/// parseNasmTimesFill -- handle 'times <count> db <const>' when the count is
+/// location-dependent (involves $/$$ or labels). Such a count is only knowable
+/// at layout time, so we emit a fill to a computed offset rather than repeating
+/// the body. With a 'db <fill>' body the fill is a single repeated byte, which
+/// the org fragment produces. The target section offset is
+///   <here> + count   ==   (anchor - $$) + count_expr
+/// where 'anchor' is a label at the current position; the count's own '$' and
+/// our anchor sit at the same place, so the symbol difference resolves to the
+/// intended constant offset at layout.
+bool AsmParser::parseNasmTimesFill(const MCExpr *CountExpr, unsigned int &KsError)
+{
+  // Only 'db <constant>' is representable as a single-byte fill.
+  if (!(getLexer().is(AsmToken::Identifier) &&
+        getTok().getIdentifier().lower() == "db")) {
+    // A location-dependent count with any other body (an instruction, or a
+    // multi-byte unit) would need multi-pass assembly.
+    KsError = KS_ERR_ASM_DIRECTIVE_VALUE_RANGE;
+    return true;
+  }
+  Lex(); // consume 'db'
+
+  const MCExpr *FillExpr;
+  if (parseExpression(FillExpr)) {
+    KsError = KS_ERR_ASM_DIRECTIVE_INVALID;
+    return true;
+  }
+  int64_t FillVal;
+  if (exprReferencesSymbol(FillExpr) || !FillExpr->evaluateAsAbsolute(FillVal) ||
+      (!isUIntN(8, FillVal) && !isIntN(8, FillVal))) {
+    KsError = KS_ERR_ASM_DIRECTIVE_VALUE_RANGE;
+    return true;
+  }
+  if (getLexer().isNot(AsmToken::EndOfStatement)) {
+    KsError = KS_ERR_ASM_DIRECTIVE_TOKEN;
+    return true;
+  }
+  Lex();
+
+  // Anchor the current position and build the target-location expression
+  //   CountExpr + <here>
+  // which evaluates, at layout, to the location the fill must reach. The org
+  // fragment compares against a base-address-inclusive fragment offset, so the
+  // anchor's full address (not a section-relative offset) is used; the count's
+  // own '$' and our anchor sit at the same place, so any base/offset terms
+  // cancel to the intended fill length.
+  MCSymbol *Anchor = getContext().createTempSymbol();
+  getStreamer().EmitLabel(Anchor);
+  const MCExpr *AnchorRef =
+      MCSymbolRefExpr::create(Anchor, MCSymbolRefExpr::VK_None, getContext());
+  const MCExpr *Offset =
+      MCBinaryExpr::createAdd(CountExpr, AnchorRef, getContext());
+  getStreamer().emitValueToOffset(Offset, (unsigned char)FillVal);
   return false;
 }
 

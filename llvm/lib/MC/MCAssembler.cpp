@@ -327,6 +327,16 @@ uint64_t MCAssembler::computeFragmentSize(const MCAsmLayout &Layout,
       }
       TargetLocation += Val;
     }
+    // Handle a subtracted symbol so that symbol-difference offsets work (this
+    // is how the NASM 'times N-($-$$) db x' fill is computed at layout time).
+    if (const MCSymbolRefExpr *B = Value.getSymB()) {
+      uint64_t Val;
+      if (!Layout.getSymbolOffset(B->getSymbol(), Val, valid)) {
+        valid = false;
+        return 0;
+      }
+      TargetLocation -= Val;
+    }
     int64_t Size = TargetLocation - FragmentOffset;
     if (Size < 0 || Size >= 0x40000000) {
       //report_fatal_error("invalid .org offset '" + Twine(TargetLocation) +
