@@ -1592,6 +1592,25 @@ X86AsmParser::ParseIntelBracExpression(unsigned SegReg, SMLoc Start,
     return ErrorOperand(BracLoc, "Expected '[' token!");
   Parser.Lex(); // Eat '['
 
+  // NASM/Intel write a segment override inside the brackets: [seg:disp]
+  // (e.g. [es:0x10], [fs:eax]). Detect a leading 'segreg :' here -- the
+  // 'seg:[...]' form is handled earlier by ParseIntelSegmentOverride.
+  if (SegReg == 0 && getLexer().is(AsmToken::Identifier) &&
+      getLexer().peekTok().is(AsmToken::Colon)) {
+    unsigned SegRegNo = 0;
+    SMLoc SegStart, SegEnd;
+    unsigned int SegErr;
+    if (!ParseRegister(SegRegNo, SegStart, SegEnd, SegErr) &&
+        (SegRegNo == X86::ES || SegRegNo == X86::CS || SegRegNo == X86::SS ||
+         SegRegNo == X86::DS || SegRegNo == X86::FS || SegRegNo == X86::GS)) {
+      SegReg = SegRegNo;
+      Parser.Lex(); // Eat ':'
+    } else {
+      KsError = KS_ERR_ASM_INVALIDOPERAND;
+      return nullptr;
+    }
+  }
+
   SMLoc StartInBrac = Tok.getLoc();
   bool IsRel;
   switch(SegReg) {
