@@ -450,7 +450,15 @@ private:
                 State = IES_ERROR;
                 break;
             }
-            IndexReg = TmpReg;
+            // The stack pointer (ESP/RSP) cannot be encoded as a SIB index.
+            // When it would land in the index slot with scale 1, swap it into
+            // the base slot, as NASM does (e.g. [rax+rsp] -> [rsp+rax]).
+            if (TmpReg == X86::ESP || TmpReg == X86::RSP) {
+                IndexReg = BaseReg;
+                BaseReg = TmpReg;
+            } else {
+                IndexReg = TmpReg;
+            }
             Scale = 1;
           }
         }
@@ -491,7 +499,15 @@ private:
                 State = IES_ERROR;
                 break;
             }
-            IndexReg = TmpReg;
+            // The stack pointer (ESP/RSP) cannot be encoded as a SIB index.
+            // When it would land in the index slot with scale 1, swap it into
+            // the base slot, as NASM does (e.g. [rax+rsp] -> [rsp+rax]).
+            if (TmpReg == X86::ESP || TmpReg == X86::RSP) {
+                IndexReg = BaseReg;
+                BaseReg = TmpReg;
+            } else {
+                IndexReg = TmpReg;
+            }
             Scale = 1;
           }
         }
@@ -694,7 +710,15 @@ private:
                 State = IES_ERROR;
                 break;
             }
-            IndexReg = TmpReg;
+            // The stack pointer (ESP/RSP) cannot be encoded as a SIB index.
+            // When it would land in the index slot with scale 1, swap it into
+            // the base slot, as NASM does (e.g. [rax+rsp] -> [rsp+rax]).
+            if (TmpReg == X86::ESP || TmpReg == X86::RSP) {
+                IndexReg = BaseReg;
+                BaseReg = TmpReg;
+            } else {
+                IndexReg = TmpReg;
+            }
             Scale = 1;
           }
         }
