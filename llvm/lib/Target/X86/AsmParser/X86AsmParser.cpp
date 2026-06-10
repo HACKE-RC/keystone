@@ -635,6 +635,15 @@ private:
             ErrMsg = "scale factor in address must be 1, 2, 4 or 8";
             return true;
           }
+          // The stack pointer (ESP/RSP) cannot be a SIB index. If it was given
+          // an explicit scale of 1 (e.g. [rbx+rsp*1]), swap it into the base
+          // slot as NASM does.
+          if ((IndexReg == X86::ESP || IndexReg == X86::RSP) && Scale == 1 &&
+              BaseReg) {
+            unsigned Tmp = BaseReg;
+            BaseReg = IndexReg;
+            IndexReg = Tmp;
+          }
           // Get the scale and replace the 'Register * Scale' with '0'.
           IC.popOperator();
         } else if ((PrevState == IES_PLUS || PrevState == IES_MINUS ||
@@ -3266,17 +3275,28 @@ bool X86AsmParser::MatchAndEmitIntelInstruction(SMLoc IDLoc, unsigned &Opcode,
       ErrorInfoMissingFeature = ErrorInfo;
   }
 
-  if (push32 && Inst.getOpcode() == X86::PUSH16i8)
-      Inst.setOpcode(X86::PUSH32i8);
+  // 'push word <imm>' forces a 16-bit operand.
   if (push16 && Inst.getOpcode() == X86::PUSHi32)
       Inst.setOpcode(X86::PUSHi16);
+  // A bare 'push <imm>' (push32 == "no explicit size") follows the CPU mode:
+  // 32-bit in 32/64-bit mode (the matcher's imm8 default is the 16-bit form,
+  // so bump it up), 16-bit in 16-bit mode (bump the imm16/32 default down).
+  if (push32) {
+    if (is16BitMode()) {
+      if (Inst.getOpcode() == X86::PUSHi32)
+          Inst.setOpcode(X86::PUSHi16);
+    } else {
+      if (Inst.getOpcode() == X86::PUSH16i8)
+          Inst.setOpcode(X86::PUSH32i8);
+    }
+  }
 
   // The Intel-syntax mnemonic alias table (unlike AT&T's) lacks the
-  // mode-dependent suffixing for the no-operand RET/IRET family, so a bare
-  // 'ret'/'retf'/'iret' always matches one fixed variant and then picks up a
-  // spurious 0x66 operand-size prefix in the other mode. Re-select the
-  // mode-appropriate variant here (AT&T already resolves these via the alias
-  // table, so only do it for Intel/NASM syntax).
+  // mode-dependent operand-size suffixing for several no-/immediate-operand
+  // instructions (ret/iret/pushf/popf/push imm/call imm), so they match one
+  // fixed variant and then pick up a spurious 0x66 operand-size prefix in the
+  // other CPU mode. Re-select the mode-appropriate variant here (AT&T already
+  // resolves these via the alias table, so only do it for Intel/NASM syntax).
   if (isParsingIntelSyntax()) {
     if (is16BitMode()) {
       switch (Inst.getOpcode()) {
@@ -3284,14 +3304,23 @@ bool X86AsmParser::MatchAndEmitIntelInstruction(SMLoc IDLoc, unsigned &Opcode,
       case X86::RETIL:  Inst.setOpcode(X86::RETIW);  break;
       case X86::LRETL:  Inst.setOpcode(X86::LRETW);  break;
       case X86::LRETIL: Inst.setOpcode(X86::LRETIW); break;
+      case X86::CALLpcrel32: Inst.setOpcode(X86::CALLpcrel16); break;
       default: break;
       }
     } else if (is32BitMode()) {
-      if (Inst.getOpcode() == X86::IRET16)
-        Inst.setOpcode(X86::IRET32);
+      switch (Inst.getOpcode()) {
+      case X86::IRET16:  Inst.setOpcode(X86::IRET32);  break;
+      case X86::PUSHF16: Inst.setOpcode(X86::PUSHF32); break;
+      case X86::POPF16:  Inst.setOpcode(X86::POPF32);  break;
+      default: break;
+      }
     } else if (is64BitMode()) {
-      if (Inst.getOpcode() == X86::IRET16)
-        Inst.setOpcode(X86::IRET64);
+      switch (Inst.getOpcode()) {
+      case X86::IRET16:  Inst.setOpcode(X86::IRET64);  break;
+      case X86::PUSHF16: Inst.setOpcode(X86::PUSHF64); break;
+      case X86::POPF16:  Inst.setOpcode(X86::POPF64);  break;
+      default: break;
+      }
     }
   }
 
