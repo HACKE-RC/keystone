@@ -325,6 +325,9 @@ private:
     unsigned BaseReg, IndexReg, TmpReg, Scale;
     int64_t Imm;
     const MCExpr *Sym;
+    // A second, subtracted symbol so that symbol differences such as
+    // [eax + b - a] can be represented (the displacement becomes Sym - SymB).
+    const MCExpr *SymB;
     StringRef SymName;
     bool StopOnLBrac, AddImmPrefix, Rel, Abs;
     InfixCalculator IC;
@@ -333,13 +336,14 @@ private:
   public:
     IntelExprStateMachine(int64_t imm, bool stoponlbrac, bool addimmprefix, bool isrel=false) :
       State(IES_PLUS), PrevState(IES_ERROR), BaseReg(0), IndexReg(0), TmpReg(0),
-      Scale(1), Imm(imm), Sym(nullptr), StopOnLBrac(stoponlbrac),
+      Scale(1), Imm(imm), Sym(nullptr), SymB(nullptr), StopOnLBrac(stoponlbrac),
       AddImmPrefix(addimmprefix), Rel(isrel), Abs(false) { Info.clear(); }
 
     unsigned getBaseReg() { return (Rel && !Abs && BaseReg == 0 && IndexReg == 0) ? (unsigned)X86::RIP : BaseReg; }
     unsigned getIndexReg() { return IndexReg; }
     unsigned getScale() { return Scale; }
     const MCExpr *getSym() { return Sym; }
+    const MCExpr *getSymB() { return SymB; }
     StringRef getSymName() { return SymName; }
     int64_t getImm(unsigned int &KsError) { return Imm + IC.execute(KsError); }
     bool isValidEndState() {
@@ -573,6 +577,7 @@ private:
       PrevState = CurrState;
     }
     void onIdentifierExpr(const MCExpr *SymRef, StringRef SymRefName) {
+      IntelExprState CurrState = State;
       PrevState = State;
       switch (State) {
       default:
@@ -582,8 +587,19 @@ private:
       case IES_MINUS:
       case IES_NOT:
         State = IES_INTEGER;
-        Sym = SymRef;
-        SymName = SymRefName;
+        if (!Sym) {
+          Sym = SymRef;
+          SymName = SymRefName;
+        } else if (CurrState == IES_MINUS && !SymB) {
+          // A subtracted second symbol: the displacement is a symbol
+          // difference (e.g. [eax + b - a]).
+          SymB = SymRef;
+        } else {
+          // More than two symbols, or two added symbols -- unrepresentable
+          // here; keep the previous (single-symbol) behaviour.
+          Sym = SymRef;
+          SymName = SymRefName;
+        }
         IC.pushOperand(IC_IMM);
         break;
       }
@@ -1592,6 +1608,10 @@ X86AsmParser::ParseIntelBracExpression(unsigned SegReg, SMLoc Start,
   if (const MCExpr *Sym = SM.getSym()) {
     // A symbolic displacement.
     Disp = Sym;
+    // A symbol difference, e.g. [eax + b - a], resolves to the distance
+    // between the two labels at layout time.
+    if (const MCExpr *SymB = SM.getSymB())
+      Disp = MCBinaryExpr::createSub(Disp, SymB, getContext());
     if (isParsingInlineAsm())
       RewriteIntelBracExpression(*InstInfo->AsmRewrites, SM.getSymName(),
                                  ImmDisp, SM.getImm(KsError), BracLoc, StartInBrac,
