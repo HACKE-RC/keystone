@@ -392,6 +392,10 @@ private:
     DK_NASM_TIMES,   // NASM 'times' prefix
     DK_NASM_EQU,     // NASM 'equ'
     DK_NASM_ALIGN,   // NASM 'align'
+    DK_NASM_DT,      // NASM 'dt' (10 bytes)
+    DK_NASM_DO,      // NASM 'do' (16 bytes)
+    DK_NASM_DY,      // NASM 'dy' (32 bytes)
+    DK_NASM_DZ,      // NASM 'dz' (64 bytes)
     DK_END
   };
 
@@ -2005,6 +2009,14 @@ bool AsmParser::parseStatement(ParseStatementInfo &Info,
       return true;
     case DK_NASM_ALIGN:
       return parseNasmDirectiveAlign();
+    case DK_NASM_DT:
+      return parseDirectiveValue(10, Info.KsError);
+    case DK_NASM_DO:
+      return parseDirectiveValue(16, Info.KsError);
+    case DK_NASM_DY:
+      return parseDirectiveValue(32, Info.KsError);
+    case DK_NASM_DZ:
+      return parseDirectiveValue(64, Info.KsError);
     }
 
     //return Error(IDLoc, "unknown directive");
@@ -2916,6 +2928,44 @@ bool AsmParser::parseDirectiveValue(unsigned Size, unsigned int &KsError)
         continue;
       }
 
+      // NASM allows floating-point literals in dd/dq/dt, emitting the value in
+      // the matching IEEE/x87 format (dd => 32-bit single, dq => 64-bit double,
+      // dt => 80-bit extended). db/dw cannot hold a float.
+      if (KsSyntax == KS_OPT_SYNTAX_NASM && getLexer().is(AsmToken::Real)) {
+        if (Size != 4 && Size != 8 && Size != 10) {
+          KsError = KS_ERR_ASM_DIRECTIVE_FPOINT;
+          return true;
+        }
+        const fltSemantics &Sem = Size == 4 ? APFloat::IEEEsingle
+                                : Size == 8 ? APFloat::IEEEdouble
+                                            : APFloat::x87DoubleExtended;
+        APFloat F(Sem);
+        if (F.convertFromString(getTok().getString(),
+                                APFloat::rmNearestTiesToEven) ==
+            APFloat::opInvalidOp) {
+          KsError = KS_ERR_ASM_DIRECTIVE_FPOINT;
+          return true;
+        }
+        APInt Bits = F.bitcastToAPInt();
+        const uint64_t *Raw = Bits.getRawData();
+        unsigned NumBytes = Bits.getBitWidth() / 8;
+        bool Error;
+        for (unsigned i = 0; i < Size; ++i) {
+          uint8_t b = (i < NumBytes) ? (uint8_t)(Raw[i / 8] >> ((i % 8) * 8)) : 0;
+          getStreamer().EmitIntValue(b, 1, Error);
+        }
+        Lex(); // consume the real token
+
+        if (getLexer().is(AsmToken::EndOfStatement))
+          break;
+        if (getLexer().isNot(AsmToken::Comma)) {
+          KsError = KS_ERR_ASM_DIRECTIVE_TOKEN;
+          return true;
+        }
+        Lex();
+        continue;
+      }
+
       const MCExpr *Value;
       SMLoc ExprLoc = getLexer().getLoc();
       if (parseExpression(Value)) {
@@ -2925,18 +2975,26 @@ bool AsmParser::parseDirectiveValue(unsigned Size, unsigned int &KsError)
 
       // Special case constant expressions to match code generator.
       if (const MCConstantExpr *MCE = dyn_cast<MCConstantExpr>(Value)) {
-        assert(Size <= 8 && "Invalid size");
         uint64_t IntValue = MCE->getValue();
-        if (!isUIntN(8 * Size, IntValue) && !isIntN(8 * Size, IntValue)) {
-            // return Error(ExprLoc, "literal value out of range for directive");
-            KsError = KS_ERR_ASM_DIRECTIVE_VALUE_RANGE;
-            return true;
-        }
         bool Error;
-        getStreamer().EmitIntValue(IntValue, Size, Error);
-        if (Error) {
-            KsError = KS_ERR_ASM_DIRECTIVE_TOKEN;
-            return true;
+        if (Size > 8) {
+          // Wide units (dt/do/dy/dz): emit the value in the low 8 bytes and
+          // zero-extend to the full width.
+          for (unsigned i = 0; i < Size; ++i) {
+            uint8_t b = (i < 8) ? (uint8_t)(IntValue >> (i * 8)) : 0;
+            getStreamer().EmitIntValue(b, 1, Error);
+          }
+        } else {
+          if (!isUIntN(8 * Size, IntValue) && !isIntN(8 * Size, IntValue)) {
+              // return Error(ExprLoc, "literal value out of range for directive");
+              KsError = KS_ERR_ASM_DIRECTIVE_VALUE_RANGE;
+              return true;
+          }
+          getStreamer().EmitIntValue(IntValue, Size, Error);
+          if (Error) {
+              KsError = KS_ERR_ASM_DIRECTIVE_TOKEN;
+              return true;
+          }
         }
       } else
         getStreamer().EmitValue(Value, Size, ExprLoc);
@@ -5605,6 +5663,11 @@ void AsmParser::initializeDirectiveKindMap(int syntax)
         DirectiveKindMap["dw"] = DK_SHORT;
         DirectiveKindMap["dd"] = DK_INT;
         DirectiveKindMap["dq"] = DK_QUAD;
+        DirectiveKindMap["dt"] = DK_NASM_DT;
+        DirectiveKindMap["do"] = DK_NASM_DO;
+        DirectiveKindMap["dy"] = DK_NASM_DY;
+        DirectiveKindMap["dz"] = DK_NASM_DZ;
+        DirectiveKindMap["extern"] = DK_EXTERN;
         DirectiveKindMap["resb"] = DK_NASM_RESB;
         DirectiveKindMap["resw"] = DK_NASM_RESB;
         DirectiveKindMap["resd"] = DK_NASM_RESB;
