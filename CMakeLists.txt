@@ -25,7 +25,7 @@ if (POLICY CMP0051)
   # stripped everywhere that access the SOURCES property, so we just
   # defer to the OLD behavior of not including generator expressions
   # in the output for now.
-  cmake_policy(SET CMP0051 OLD)
+  cmake_policy(SET CMP0051 NEW)
 endif()
 
 if (POLICY CMP0063)
