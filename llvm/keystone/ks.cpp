@@ -554,13 +554,16 @@ ks_err ks_close(ks_engine *ks)
 KEYSTONE_EXPORT
 ks_err ks_option(ks_engine *ks, ks_opt_type type, size_t value)
 {
-    // Default to decimal immediates (NASM/Intel/GAS are all decimal by
-    // default). Hex-default is opt-in via the KS_OPT_SYNTAX_RADIX16 flag below.
-    ks->MAI->setRadix(10);
+    if (!ks)
+        return KS_ERR_HANDLE;
+
     switch(type) {
         case KS_OPT_SYNTAX:
-            if (ks->arch != KS_ARCH_X86)
+            if (ks->arch != KS_ARCH_X86 || !ks->MAI)
                 return KS_ERR_OPT_INVALID;
+            // Default to decimal immediates (NASM/Intel/GAS are all decimal by
+            // default). Hex-default is opt-in via the KS_OPT_SYNTAX_RADIX16 flag below.
+            ks->MAI->setRadix(10);
             switch(value) {
                 default:
                     return KS_ERR_OPT_INVALID;
