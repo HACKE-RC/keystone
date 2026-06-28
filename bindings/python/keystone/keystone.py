@@ -10,6 +10,7 @@ from .keystone_const import *
 from ctypes import *
 from platform import system
 from os.path import split, join, dirname, exists
+import sysconfig
 import sys
 
 
@@ -44,8 +45,7 @@ if _found == False:
 
 if _found == False:
     # last try: loading from python lib directory
-    import distutils.sysconfig
-    _lib_path = distutils.sysconfig.get_python_lib()
+    _lib_path = sysconfig.get_paths()["purelib"]
     for _lib in _all_libs:
         try:
             _lib_file = join(_lib_path, 'keystone', _lib)
@@ -242,4 +242,3 @@ def debug():
     (major, minor, _combined) = ks_version()
 
     return "python-%s-c%u.%u-b%u.%u" % (all_archs, major, minor, KS_API_MAJOR, KS_API_MINOR)
-

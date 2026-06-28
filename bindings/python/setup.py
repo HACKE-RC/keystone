@@ -5,17 +5,17 @@
 # upload PyPi package with: $ python setup.py sdist upload -r pypi
 
 import glob
+import logging as log
 import os
 import shutil
 import subprocess
 import stat
 import sys
 import platform
-from distutils import log
+import sysconfig
 from setuptools import setup
-from distutils.util import get_platform
-from distutils.command.build import build as _build
-from distutils.command.sdist import sdist as _sdist
+from setuptools.command.build import build as _build
+from setuptools.command.sdist import sdist as _sdist
 from setuptools.command.bdist_egg import bdist_egg as _bdist_egg
 from setuptools.command.develop import develop as _develop
 
@@ -160,7 +160,7 @@ def dummy_src():
 if 'bdist_wheel' in sys.argv and '--plat-name' not in sys.argv:
     idx = sys.argv.index('bdist_wheel') + 1
     sys.argv.insert(idx, '--plat-name')
-    name = get_platform()
+    name = sysconfig.get_platform()
     if 'linux' in name:
         # linux_* platform tags are disallowed because the python ecosystem is fubar
         # linux builds should be built in the centos 5 vm for maximum compatibility
@@ -177,7 +177,7 @@ if 'bdist_wheel' in sys.argv and '--plat-name' not in sys.argv:
         sys.argv.insert(idx + 1, name.replace('.', '_').replace('-', '_'))
 
 
-long_desc = '''
+long_desc = r'''
 Keystone is a lightweight multi-platform, multi-architecture assembler framework.
 It offers some unparalleled features:
 
