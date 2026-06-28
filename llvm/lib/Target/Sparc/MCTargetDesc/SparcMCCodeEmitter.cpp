@@ -204,7 +204,10 @@ getBranchPredTargetOpValue(const MCInst &MI, unsigned OpNo,
                            SmallVectorImpl<MCFixup> &Fixups,
                            const MCSubtargetInfo &STI) const {
   const MCOperand &MO = MI.getOperand(OpNo);
-  if (MO.isReg() || MO.isImm())
+  if (MO.isImm())
+    return (MO.getImm() - MI.getAddress()) / 4;
+
+  if (MO.isReg())
     return getMachineOpValue(MI, MO, Fixups, STI);
 
   Fixups.push_back(MCFixup::create(0, MO.getExpr(),
@@ -216,7 +219,10 @@ getBranchOnRegTargetOpValue(const MCInst &MI, unsigned OpNo,
                            SmallVectorImpl<MCFixup> &Fixups,
                            const MCSubtargetInfo &STI) const {
   const MCOperand &MO = MI.getOperand(OpNo);
-  if (MO.isReg() || MO.isImm())
+  if (MO.isImm())
+    return (MO.getImm() - MI.getAddress()) / 4;
+
+  if (MO.isReg())
     return getMachineOpValue(MI, MO, Fixups, STI);
 
   Fixups.push_back(MCFixup::create(0, MO.getExpr(),
